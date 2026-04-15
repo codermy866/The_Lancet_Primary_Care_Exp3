@@ -1,0 +1,12 @@
+# OCT_traige - 仅 OCT 训练方案依赖
+
+torch>=1.10.0
+torchvision>=0.11.0
+numpy
+pandas
+scikit-learn
+tqdm
+Pillow
+matplotlib
+seaborn>=0.12
+
