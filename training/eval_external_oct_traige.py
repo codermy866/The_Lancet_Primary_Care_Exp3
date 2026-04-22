@@ -14,9 +14,52 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from config import OCTTraigeConfig
-from data.dataset_oct_only import OCTOnlyDataset
+from data.dataset_oct_only import OCTOnlyDataset, _extract_center_id_from_oct_id
 from models.oct_traige_model import OCTTraigeModel
 from training.train_oct_traige import _build_center_mapping, _compute_binary_metrics
+
+
+def _build_external_oct_paths(ext_df: pd.DataFrame, data_root: Path) -> pd.DataFrame:
+    """
+    Ensure external dataframe has `oct_paths` so dataset loader can read real images.
+    """
+    if "oct_paths" in ext_df.columns and ext_df["oct_paths"].astype(str).str.len().gt(0).any():
+        return ext_df
+
+    if "oct_id" not in ext_df.columns:
+        raise ValueError("external csv 缺少 oct_id/OCT，无法构建 oct_paths")
+
+    oct_root_candidates = [
+        data_root / "external_validation" / "oct",
+        data_root / "external_test" / "oct",
+        data_root / "external" / "oct",
+    ]
+    oct_root = None
+    for cand in oct_root_candidates:
+        if cand.exists():
+            oct_root = cand
+            break
+    if oct_root is None:
+        raise FileNotFoundError(
+            f"未找到 external OCT 根目录，候选为: {[str(x) for x in oct_root_candidates]}"
+        )
+
+    oct_paths_col: list[str] = []
+    missing = 0
+    for oid in ext_df["oct_id"].astype(str).tolist():
+        case_dir = oct_root / oid
+        if not case_dir.exists():
+            oct_paths_col.append("")
+            missing += 1
+            continue
+        paths = sorted([str(p) for p in case_dir.glob("*.png")] + [str(p) for p in case_dir.glob("*.jpg")])
+        oct_paths_col.append(";".join(paths))
+
+    ext_df = ext_df.copy()
+    ext_df["oct_paths"] = oct_paths_col
+    if missing > 0:
+        print(f"[warn] external cases missing OCT directory: {missing}/{len(ext_df)}")
+    return ext_df
 
 
 @torch.no_grad()
@@ -41,6 +84,13 @@ def main():
 
     center_to_idx = _build_center_mapping(train_csv, val_csv)
     ext_df = pd.read_csv(ext_csv, encoding="utf-8")
+    if "center_id" not in ext_df.columns:
+        if "oct_id" not in ext_df.columns and "OCT" in ext_df.columns:
+            ext_df = ext_df.rename(columns={"OCT": "oct_id"})
+        if "oct_id" not in ext_df.columns:
+            raise ValueError(f"{ext_csv} 缺少 center_id，且无法从 oct_id/OCT 推断中心")
+        ext_df["center_id"] = ext_df["oct_id"].apply(_extract_center_id_from_oct_id)
+    ext_df = _build_external_oct_paths(ext_df, data_root)
     ext_df["center_id_external"] = ext_df["center_id"].astype(str)
     # 推理时 forward(..., return_loss_components=False) 不使用 center_labels；
     # 但 checkpoint 的 discriminator/memory_bank 维度与训练时中心数一致，不能为外部中心扩容。
@@ -73,6 +123,7 @@ def main():
     except TypeError:
         ckpt = torch.load(args.checkpoint, map_location=device)
     sd = ckpt["model_state_dict"]
+    ckpt_config = ckpt.get("config", {}) if isinstance(ckpt, dict) else {}
     disc_w = sd.get("center_discriminator.net.6.weight")
     if disc_w is None:
         raise KeyError("checkpoint 缺少 center_discriminator.net.6.weight，无法推断 num_centers")
@@ -86,6 +137,9 @@ def main():
         num_centers=num_centers_ckpt,
         memory_capacity=config.memory_capacity,
         alpha_cf=config.alpha_cf,
+        encoder_type=str(ckpt_config.get("encoder_type", getattr(config, "encoder_type", "cnn"))),
+        vit_pretrained=bool(ckpt_config.get("vit_pretrained", False)),
+        img_size=int(ckpt_config.get("img_size", config.img_size)),
     ).to(device)
     model.load_state_dict(sd, strict=True)
     model.eval()

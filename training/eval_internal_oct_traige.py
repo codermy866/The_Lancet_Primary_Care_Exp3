@@ -19,7 +19,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from config import OCTTraigeConfig
-from data.dataset_oct_only import OCTOnlyDataset
+from data.dataset_oct_only import OCTOnlyDataset, _extract_center_id_from_oct_id
 from models.oct_traige_model import OCTTraigeModel
 from training.train_oct_traige import _build_center_mapping, _compute_binary_metrics
 
@@ -72,6 +72,13 @@ def _run_split(
     overall["loss"] = total_loss / max(len(loader), 1)
 
     df = pd.read_csv(csv_path, encoding="utf-8").reset_index(drop=True)
+    if "center_id" not in df.columns:
+        if "oct_id" not in df.columns and "OCT" in df.columns:
+            df = df.rename(columns={"OCT": "oct_id"})
+        if "oct_id" not in df.columns:
+            raise ValueError(f"{csv_path} 缺少 center_id，且无法从 oct_id/OCT 推断中心")
+        df["center_id"] = df["oct_id"].apply(_extract_center_id_from_oct_id)
+    df["center_id"] = df["center_id"].astype(str)
     probs = torch.softmax(logits_cat, dim=1)[:, 1].numpy()
     preds = logits_cat.argmax(dim=1).numpy()
     df["pred"] = preds
@@ -113,6 +120,7 @@ def main():
     except TypeError:
         ckpt = torch.load(args.checkpoint, map_location=device)
     sd = ckpt["model_state_dict"]
+    ckpt_config = ckpt.get("config", {}) if isinstance(ckpt, dict) else {}
     disc_w = sd.get("center_discriminator.net.6.weight")
     if disc_w is None:
         raise KeyError("checkpoint 缺少 center_discriminator.net.6.weight")
@@ -126,6 +134,9 @@ def main():
         num_centers=num_centers_ckpt,
         memory_capacity=config.memory_capacity,
         alpha_cf=config.alpha_cf,
+        encoder_type=str(ckpt_config.get("encoder_type", getattr(config, "encoder_type", "cnn"))),
+        vit_pretrained=bool(ckpt_config.get("vit_pretrained", False)),
+        img_size=int(ckpt_config.get("img_size", config.img_size)),
     ).to(device)
     model.load_state_dict(sd, strict=True)
     model.eval()

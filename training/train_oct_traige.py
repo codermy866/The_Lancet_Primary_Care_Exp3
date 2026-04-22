@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import sys
 import json
+import math
 from pathlib import Path
 from datetime import datetime
 
@@ -163,6 +164,8 @@ def train_one_epoch(model: OCTTraigeModel, loader: DataLoader, optimizer, criter
                 loss = loss + config.lambda_consist * comps["L_consist"]
 
         loss.backward()
+        if float(getattr(config, "max_grad_norm", 0.0) or 0.0) > 0.0:
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=float(config.max_grad_norm))
         optimizer.step()
 
         total_loss += float(loss.detach().cpu().item())
@@ -217,6 +220,8 @@ def main():
     parser.add_argument("--lr", type=float, default=None, help="覆盖 learning_rate")
     parser.add_argument("--weight_decay", type=float, default=None, help="覆盖 weight_decay")
     parser.add_argument("--dropout", type=float, default=None, help="覆盖 dropout")
+    parser.add_argument("--encoder_type", type=str, default=None, choices=["cnn", "vit"], help="切片编码器类型")
+    parser.add_argument("--vit_pretrained", type=int, default=None, help="1启用 ImageNet ViT 预训练，0关闭")
     parser.add_argument("--lambda_adv", type=float, default=None, help="覆盖 lambda_adv")
     parser.add_argument("--lambda_ortho", type=float, default=None, help="覆盖 lambda_ortho")
     parser.add_argument("--lambda_consist", type=float, default=None, help="覆盖 lambda_consist")
@@ -224,6 +229,26 @@ def main():
     parser.add_argument("--use_focal_loss", type=int, default=None, help="1启用 focal loss，0关闭")
     parser.add_argument("--focal_alpha", type=float, default=None, help="覆盖 focal_alpha")
     parser.add_argument("--focal_gamma", type=float, default=None, help="覆盖 focal_gamma")
+    parser.add_argument("--min_lr", type=float, default=None, help="覆盖 min_learning_rate")
+    parser.add_argument("--warmup_epochs", type=int, default=None, help="覆盖 warmup_epochs")
+    parser.add_argument(
+        "--vit_backbone_lr_mult",
+        type=float,
+        default=None,
+        help="ViT 预训练 backbone 相对 base lr 的倍数（仅 vit+pretrained 分组优化器生效）",
+    )
+    parser.add_argument(
+        "--use_train_augment",
+        type=int,
+        default=None,
+        help="1 启用训练集轻量增强（几何/颜色/RandomErasing），0 关闭；默认读 config",
+    )
+    parser.add_argument(
+        "--max_grad_norm",
+        type=float,
+        default=None,
+        help="梯度裁剪阈值，0 关闭；默认读 config.max_grad_norm",
+    )
     args = parser.parse_args()
 
     config = OCTTraigeConfig()
@@ -245,6 +270,10 @@ def main():
         config.weight_decay = float(args.weight_decay)
     if args.dropout is not None:
         config.dropout = float(args.dropout)
+    if args.encoder_type is not None:
+        config.encoder_type = str(args.encoder_type).lower()
+    if args.vit_pretrained is not None:
+        config.vit_pretrained = bool(int(args.vit_pretrained))
     if args.lambda_adv is not None:
         config.lambda_adv = float(args.lambda_adv)
     if args.lambda_ortho is not None:
@@ -259,12 +288,44 @@ def main():
         config.focal_alpha = float(args.focal_alpha)
     if args.focal_gamma is not None:
         config.focal_gamma = float(args.focal_gamma)
+    if args.min_lr is not None:
+        config.min_learning_rate = float(args.min_lr)
+    if args.warmup_epochs is not None:
+        config.warmup_epochs = int(args.warmup_epochs)
+    if args.vit_backbone_lr_mult is not None:
+        config.vit_backbone_lr_mult = float(args.vit_backbone_lr_mult)
+    if args.use_train_augment is not None:
+        config.use_train_augment = bool(int(args.use_train_augment))
+    if args.max_grad_norm is not None:
+        config.max_grad_norm = float(args.max_grad_norm)
+
+    # 对 ViT 给出更稳默认值（仅在用户未显式覆盖学习率时生效）
+    if (
+        str(config.encoder_type).lower() == "vit"
+        and args.lr is None
+        and float(config.learning_rate) > 1e-4
+    ):
+        config.learning_rate = 5e-5
+    # 预训练 ViT：略拉长 warmup（仅当用户未指定 warmup）
+    if (
+        str(config.encoder_type).lower() == "vit"
+        and bool(config.vit_pretrained)
+        and args.warmup_epochs is None
+        and int(config.warmup_epochs) < 5
+    ):
+        config.warmup_epochs = 5
 
     for d in [config.checkpoint_dir, config.log_dir]:
         Path(d).mkdir(parents=True, exist_ok=True)
 
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     print(f"[OCT_traige] device={device} data_root={config.data_root}")
+    print(
+        f"[OCT_traige] encoder_type={config.encoder_type} "
+        f"vit_pretrained={config.vit_pretrained} vit_backbone_lr_mult={config.vit_backbone_lr_mult} "
+        f"lr={config.learning_rate} min_lr={config.min_learning_rate} warmup_epochs={config.warmup_epochs} "
+        f"use_train_augment={config.use_train_augment} max_grad_norm={config.max_grad_norm}"
+    )
 
     data_root = Path(config.data_root)
     train_csv = data_root / config.train_csv_name
@@ -279,10 +340,7 @@ def main():
     num_centers = len(center_to_idx)
     print(f"[OCT_traige] centers={num_centers} mapping={center_to_idx}")
 
-    # Data transforms（不做增强，避免影响复现实验；需要增强可在这里加）
-    # 注意：Dataset 内已实现 Resize/Normalize，因此这里不传 transform
-
-    # 构建 train/val dataset
+    # 构建 train/val dataset（训练集可选轻量增强，见 OCTOnlyDataset.train_augment）
     train_ds = OCTOnlyDataset(
         csv_path=str(train_csv),
         data_root=str(config.data_root),
@@ -290,6 +348,7 @@ def main():
         oct_frames=config.oct_frames,
         img_size=config.img_size,
         center_to_idx=center_to_idx,
+        train_augment=bool(config.use_train_augment),
     )
     val_ds = OCTOnlyDataset(
         csv_path=str(val_csv),
@@ -343,13 +402,54 @@ def main():
         num_centers=num_centers,
         memory_capacity=config.memory_capacity,
         alpha_cf=config.alpha_cf,
+        encoder_type=config.encoder_type,
+        vit_pretrained=config.vit_pretrained,
+        img_size=config.img_size,
     ).to(device)
 
-    optimizer = torch.optim.AdamW(
-        model.parameters(),
-        lr=config.learning_rate,
-        weight_decay=config.weight_decay,
+    use_vit_pt_groups = (
+        str(config.encoder_type).lower() == "vit"
+        and bool(config.vit_pretrained)
+        and float(config.vit_backbone_lr_mult) > 0.0
+        and float(config.vit_backbone_lr_mult) < 1.0
     )
+    if use_vit_pt_groups:
+        vit_net = model.oct_encoder.slice_encoder.vit
+        vit_param_ids = {id(p) for p in vit_net.parameters()}
+        vit_params = [p for p in model.parameters() if id(p) in vit_param_ids]
+        other_params = [p for p in model.parameters() if id(p) not in vit_param_ids]
+        mult = float(config.vit_backbone_lr_mult)
+        base_lr = float(config.learning_rate)
+        optimizer = torch.optim.AdamW(
+            [
+                {"params": vit_params, "lr": base_lr * mult},
+                {"params": other_params, "lr": base_lr},
+            ],
+            weight_decay=config.weight_decay,
+        )
+    else:
+        optimizer = torch.optim.AdamW(
+            model.parameters(),
+            lr=config.learning_rate,
+            weight_decay=config.weight_decay,
+        )
+
+    total_epochs = max(int(config.num_epochs), 1)
+    warmup_epochs = max(0, min(int(config.warmup_epochs), total_epochs - 1))
+    min_lr = float(config.min_learning_rate)
+    base_lr = float(config.learning_rate)
+
+    def _lr_lambda(epoch_idx: int) -> float:
+        epoch = epoch_idx + 1
+        if warmup_epochs > 0 and epoch <= warmup_epochs:
+            return max(1e-8, epoch / warmup_epochs)
+        if total_epochs <= warmup_epochs:
+            return 1.0
+        progress = (epoch - warmup_epochs) / max(total_epochs - warmup_epochs, 1)
+        cosine = 0.5 * (1.0 + math.cos(math.pi * progress))
+        return max(min_lr / max(base_lr, 1e-12), cosine)
+
+    scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=_lr_lambda)
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     best_auc = -1.0
@@ -407,6 +507,7 @@ def main():
 
         print(
             f"Epoch {epoch:03d}: "
+            f"lr={optimizer.param_groups[0]['lr']:.6g} "
             f"train_loss={train_metrics['loss']:.4f} train_acc={train_metrics['acc']:.4f} train_auc={train_metrics['auc']:.4f} "
             f"train_f1={train_metrics['f1']:.4f} train_bal_acc={train_metrics['balanced_acc']:.4f} train_mcc={train_metrics['mcc']:.4f} "
             f"train_ppv={train_metrics['ppv']:.4f} train_npv={train_metrics['npv']:.4f} | "
@@ -428,6 +529,8 @@ def main():
                 best_path,
             )
             print(f"  [OCT_traige] Saved best model to {best_path} (AUC={best_auc:.4f})")
+
+        scheduler.step()
 
     torch.save(
         {

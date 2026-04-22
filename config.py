@@ -33,11 +33,17 @@ class OCTTraigeConfig:
     # 模型
     embed_dim: int = 256
     dropout: float = 0.3
+    encoder_type: str = "cnn"  # cnn | vit
+    vit_pretrained: bool = False
+    # 仅当 encoder_type=vit 且 vit_pretrained=True：ViT backbone 相对 head 的 LR 倍数（更稳的微调）
+    vit_backbone_lr_mult: float = 0.1
 
     # 训练
     batch_size: int = 4
     num_epochs: int = 30
     learning_rate: float = 2e-4
+    min_learning_rate: float = 1e-6
+    warmup_epochs: int = 3
     weight_decay: float = 0.05
     num_workers: int = 4
     pin_memory: bool = True
@@ -60,6 +66,10 @@ class OCTTraigeConfig:
     use_focal_loss: bool = True
     focal_alpha: float = 0.25
     focal_gamma: float = 2.0
+
+    # 数据与优化（提升泛化 / 稳定 ViT）
+    use_train_augment: bool = True
+    max_grad_norm: float = 1.0  # 0 表示不做 clip
 
     def __post_init__(self):
         if not self.data_root:

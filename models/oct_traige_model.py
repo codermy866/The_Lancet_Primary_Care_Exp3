@@ -196,6 +196,9 @@ class OCTTraigeModel(nn.Module):
         num_centers: int = 5,
         memory_capacity: int = 100,
         alpha_cf: float = 0.3,
+        encoder_type: str = "cnn",
+        vit_pretrained: bool = False,
+        img_size: int = 224,
     ):
         super().__init__()
         self.embed_dim = int(embed_dim)
@@ -209,6 +212,9 @@ class OCTTraigeModel(nn.Module):
             embed_dim=embed_dim,
             slice_feat_dim=64,
             dropout=dropout,
+            encoder_type=encoder_type,
+            vit_pretrained=vit_pretrained,
+            image_size=int(img_size),
         )
 
         self.dual_head = DualHeadImageEncoder(input_dim=embed_dim, embed_dim=embed_dim)
