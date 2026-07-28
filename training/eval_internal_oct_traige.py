@@ -121,6 +121,11 @@ def main():
         ckpt = torch.load(args.checkpoint, map_location=device)
     sd = ckpt["model_state_dict"]
     ckpt_config = ckpt.get("config", {}) if isinstance(ckpt, dict) else {}
+    config.oct_frames = int(ckpt_config.get("oct_frames", config.oct_frames))
+    config.img_size = int(ckpt_config.get("img_size", config.img_size))
+    config.embed_dim = int(ckpt_config.get("embed_dim", config.embed_dim))
+    config.dropout = float(ckpt_config.get("dropout", config.dropout))
+    config.alpha_cf = float(ckpt_config.get("alpha_cf", config.alpha_cf))
     disc_w = sd.get("center_discriminator.net.6.weight")
     if disc_w is None:
         raise KeyError("checkpoint 缺少 center_discriminator.net.6.weight")

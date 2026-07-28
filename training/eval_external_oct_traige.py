@@ -15,6 +15,7 @@ sys.path.insert(0, str(ROOT))
 
 from config import OCTTraigeConfig
 from data.dataset_oct_only import OCTOnlyDataset, _extract_center_id_from_oct_id
+from data.dataset_oct_only import _natural_sort_key
 from models.oct_traige_model import OCTTraigeModel
 from training.train_oct_traige import _build_center_mapping, _compute_binary_metrics
 
@@ -52,7 +53,10 @@ def _build_external_oct_paths(ext_df: pd.DataFrame, data_root: Path) -> pd.DataF
             oct_paths_col.append("")
             missing += 1
             continue
-        paths = sorted([str(p) for p in case_dir.glob("*.png")] + [str(p) for p in case_dir.glob("*.jpg")])
+        paths = sorted(
+            [str(p) for p in case_dir.glob("*.png")] + [str(p) for p in case_dir.glob("*.jpg")],
+            key=_natural_sort_key,
+        )
         oct_paths_col.append(";".join(paths))
 
     ext_df = ext_df.copy()
@@ -124,6 +128,11 @@ def main():
         ckpt = torch.load(args.checkpoint, map_location=device)
     sd = ckpt["model_state_dict"]
     ckpt_config = ckpt.get("config", {}) if isinstance(ckpt, dict) else {}
+    config.oct_frames = int(ckpt_config.get("oct_frames", config.oct_frames))
+    config.img_size = int(ckpt_config.get("img_size", config.img_size))
+    config.embed_dim = int(ckpt_config.get("embed_dim", config.embed_dim))
+    config.dropout = float(ckpt_config.get("dropout", config.dropout))
+    config.alpha_cf = float(ckpt_config.get("alpha_cf", config.alpha_cf))
     disc_w = sd.get("center_discriminator.net.6.weight")
     if disc_w is None:
         raise KeyError("checkpoint 缺少 center_discriminator.net.6.weight，无法推断 num_centers")
@@ -201,4 +210,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
