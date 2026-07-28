@@ -4,6 +4,7 @@ import argparse
 import sys
 import json
 import math
+import random
 from pathlib import Path
 from datetime import datetime
 
@@ -33,6 +34,14 @@ sys.path.insert(0, str(ROOT))
 from config import OCTTraigeConfig
 from data.dataset_oct_only import OCTOnlyDataset, _extract_center_id_from_oct_id
 from models.oct_traige_model import OCTTraigeModel
+
+
+def _set_seed(seed: int):
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
 
 
 class FocalLoss(nn.Module):
@@ -215,6 +224,11 @@ def main():
     parser.add_argument("--train_csv", type=str, default="", help="覆盖 train csv 文件名")
     parser.add_argument("--val_csv", type=str, default="", help="覆盖 val csv 文件名")
     parser.add_argument("--epochs", type=int, default=None, help="覆盖 num_epochs")
+    parser.add_argument("--batch_size", type=int, default=None, help="覆盖 batch_size")
+    parser.add_argument("--num_workers", type=int, default=None, help="覆盖 num_workers")
+    parser.add_argument("--oct_frames", type=int, default=None, help="覆盖 OCT 切片帧数")
+    parser.add_argument("--img_size", type=int, default=None, help="覆盖图像尺寸")
+    parser.add_argument("--seed", type=int, default=42, help="随机种子")
     parser.add_argument("--checkpoint_dir", type=str, default="", help="覆盖 checkpoint_dir")
     parser.add_argument("--log_dir", type=str, default="", help="覆盖 log_dir")
     parser.add_argument("--lr", type=float, default=None, help="覆盖 learning_rate")
@@ -252,6 +266,7 @@ def main():
     args = parser.parse_args()
 
     config = OCTTraigeConfig()
+    _set_seed(int(args.seed))
     if args.data_root:
         config.data_root = args.data_root
     if args.train_csv:
@@ -260,6 +275,14 @@ def main():
         config.val_csv_name = args.val_csv
     if args.epochs is not None:
         config.num_epochs = int(args.epochs)
+    if args.batch_size is not None:
+        config.batch_size = int(args.batch_size)
+    if args.num_workers is not None:
+        config.num_workers = int(args.num_workers)
+    if args.oct_frames is not None:
+        config.oct_frames = int(args.oct_frames)
+    if args.img_size is not None:
+        config.img_size = int(args.img_size)
     if args.checkpoint_dir:
         config.checkpoint_dir = args.checkpoint_dir
     if args.log_dir:
@@ -323,6 +346,7 @@ def main():
     print(
         f"[OCT_traige] encoder_type={config.encoder_type} "
         f"vit_pretrained={config.vit_pretrained} vit_backbone_lr_mult={config.vit_backbone_lr_mult} "
+        f"oct_frames={config.oct_frames} img_size={config.img_size} batch_size={config.batch_size} "
         f"lr={config.learning_rate} min_lr={config.min_learning_rate} warmup_epochs={config.warmup_epochs} "
         f"use_train_augment={config.use_train_augment} max_grad_norm={config.max_grad_norm}"
     )
@@ -560,4 +584,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

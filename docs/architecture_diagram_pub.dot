@@ -1,0 +1,113 @@
+digraph OCT_pub {
+  rankdir=LR;
+  graph [fontname="Times New Roman", fontsize=12, splines=ortho, pad=0.4, ranksep=1.0, nodesep=0.7];
+  node [shape=rect, style="rounded,filled", fontname="Times New Roman", fontsize=11, penwidth=1.4];
+  edge [color="#333333", penwidth=1.4, arrowsize=0.9];
+
+  /* Colors */
+  // encoder: light orange, depth encoder: light blue, heads: light green, memory/loss: light gray
+  ENC_FILL = "#FFF3E0";
+  ENC_BORDER = "#D97706";
+  DEP_FILL = "#E8F6FF";
+  DEP_BORDER = "#0284C7";
+  HEAD_FILL = "#ECFDF5";
+  HEAD_BORDER = "#059669";
+  MEM_FILL = "#F3F4F6";
+  MEM_BORDER = "#64748B";
+
+  /* Left: Per-slice encoder options */
+  subgraph cluster_enc {
+    label=< <B>1. Per-slice Encoder</B> >;
+    labelloc=t;
+    style=rounded;
+    color="#B36B00";
+    node [shape=rect, style="rounded,filled", fillcolor=ENC_FILL, color=ENC_BORDER];
+
+    enc_in [label=< <B>Input: OCT Slice</B><BR/>(C,H,W) >, width=1.8];
+    slice_cnn [label=< <B>SliceCNN (lightweight)</B><BR/>Conv2d → BN → ReLU → Pool → AdaptiveAvgPool>];
+    slice_vit [label=< <B>Slice ViT (small)</B><BR/>PatchEmbed → TransformerEncoder → CLS proj>];
+    per_slice_feat [label=< <B>Per-slice Features</B><BR/>(S*B, slice_feat_dim) >];
+
+    enc_in -> slice_cnn -> per_slice_feat;
+    enc_in -> slice_vit -> per_slice_feat [style=dashed];
+  }
+
+  /* Center: Depth-resolved encoder */
+  subgraph cluster_depth {
+    label=< <B>2. Depth-Resolved Encoder</B> >;
+    labelloc=t;
+    style=rounded;
+    color="#0369A1";
+    node [shape=rect, style="rounded,filled", fillcolor=DEP_FILL, color=DEP_BORDER];
+
+    slice_proj [label=< <B>Slice Projection</B><BR/>Linear → LayerNorm → Dropout<BR/>→ embed_dim >];
+    depth_gru [label=< <B>Depth GRU</B><BR/>GRU over S slices (batch_first=True) >];
+    depth_attn [label=< <B>Depth Attention Pooling</B><BR/>MLP → softmax → weighted sum>];
+    depth_feat [label=< <B>Depth-resolved Feature</B><BR/>(B, embed_dim) >];
+
+    per_slice_feat -> slice_proj -> depth_gru -> depth_attn -> depth_feat;
+  }
+
+  /* Right: Heads, classifier, memory, discriminator */
+  subgraph cluster_heads {
+    label=< <B>3. Dual-Head & Robustness Modules</B> >;
+    labelloc=t;
+    style=rounded;
+    color="#047857";
+    node [shape=rect, style="rounded,filled", fillcolor=HEAD_FILL, color=HEAD_BORDER];
+
+    dual_head [label=< <B>DualHeadImageEncoder</B><BR/>feature_proj → causal_head / noise_head >];
+    z_causal [label=< <B>z_causal</B><BR/>(embed_dim) >];
+    z_noise [label=< <B>z_noise</B><BR/>(embed_dim) >];
+    classifier [label=< <B>Classifier</B><BR/>Dropout → Linear → LayerNorm → GELU → Linear(num_classes)>];
+
+    depth_feat -> dual_head -> z_causal;
+    dual_head -> z_noise;
+    z_causal -> classifier;
+  }
+
+  /* Memory bank, discriminator, counterfactual flow */
+  mem [label=< <B>Noise Memory Bank</B><BR/>per-center circular buffer (capacity) >, shape=rect, style="rounded,filled", fillcolor=MEM_FILL, color=MEM_BORDER];
+  disc [label=< <B>Center Discriminator</B><BR/>MLP → logits(num_centers) >, shape=rect, style="rounded,filled", fillcolor=MEM_FILL, color=MEM_BORDER];
+  z_cf [label=< <B>Counterfactual Noise</B><BR/>z_noise_cf (sampled from memory) >, shape=rect, style="rounded,filled", fillcolor=MEM_FILL, color=MEM_BORDER];
+  z_causal_cf [label=< <B>CF Feature</B><BR/>z_causal_cf = z_causal + α_cf * z_noise_cf >, shape=rect, style="rounded,filled", fillcolor=HEAD_FILL, color=HEAD_BORDER];
+  classifier_cf [label=< <B>Classifier (cf)</B><BR/>predict logits_cf>];
+
+  z_noise -> disc;
+  z_noise -> mem [style=dashed];
+  mem -> z_cf;
+  z_causal -> z_causal_cf;
+  z_cf -> z_causal_cf;
+  z_causal_cf -> classifier_cf;
+
+  /* Losses & training signals */
+  losses [label=< <B>Losses (Training Signals)</B><BR/>L_adv (adversarial) · L_consist (CF consistency) · L_ortho (orthogonality)>], shape=rect, style="rounded,filled", fillcolor="#FFFBEB", color="#B45309";
+  disc -> losses [style=dashed];
+  classifier_cf -> losses [style=dashed];
+  z_causal -> losses [style=dashed];
+  z_noise -> losses [style=dashed];
+
+  /* Legend */
+  subgraph cluster_legend {
+    label="";
+    margin=0.1;
+    node [shape=plaintext, fontname="Times New Roman", fontsize=11];
+    legend1 [label=<
+      <TABLE BORDER="0" CELLBORDER="0" CELLPADDING="4">
+        <TR><TD ALIGN="LEFT"><B>Legend</B></TD></TR>
+        <TR><TD ALIGN="LEFT"><FONT POINT-SIZE="10">■</FONT> <FONT POINT-SIZE="10">Per-slice encoder (CNN / ViT)</FONT></TD></TR>
+        <TR><TD ALIGN="LEFT"><FONT POINT-SIZE="10">■</FONT> <FONT POINT-SIZE="10">Depth-resolved sequence encoder</FONT></TD></TR>
+        <TR><TD ALIGN="LEFT"><FONT POINT-SIZE="10">■</FONT> <FONT POINT-SIZE="10">Representation heads & classifier</FONT></TD></TR>
+        <TR><TD ALIGN="LEFT"><FONT POINT-SIZE="10">■</FONT> <FONT POINT-SIZE="10">Memory / Discriminator / Losses</FONT></TD></TR>
+      </TABLE>
+    >];
+  }
+
+  /* Layout tweaks: place nodes explicitly to get publication-like arrangement */
+  { rank = same; enc_in; slice_cnn; slice_vit; }
+  { rank = same; depth_feat; dual_head; }
+
+  /* Title as separate label node */
+  title [label=< <B><FONT POINT-SIZE="14">OCT Triage — Publication-grade Architecture</FONT></B><BR/><FONT POINT-SIZE="10">Depth-resolved encoding, dual-head disentangled representation, per-center noise memory and counterfactual consistency</FONT> >, shape=none];
+
+}

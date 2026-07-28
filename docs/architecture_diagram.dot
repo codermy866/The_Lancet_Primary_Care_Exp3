@@ -1,0 +1,55 @@
+digraph OCT {
+  rankdir=LR;
+  graph [fontname="Times New Roman", fontsize=12, splines=ortho, pad=0.2, ranksep=1.0, nodesep=0.6];
+  node [shape=rect, style="rounded,filled", fillcolor="white", color="#000000", fontname="Times New Roman", fontsize=12, penwidth=1.2];
+  edge [color="#000000", penwidth=1.2, arrowsize=0.8];
+
+  subgraph cluster_encoder {
+    label="DepthResolvedOCTEncoder";
+    labelloc=t;
+    color="#000000";
+    style="rounded";
+    A [label="OCT Volume\n(B, S, 3, H, W)"];
+    B [label="Per-slice Encoder\n(SliceCNN or SliceViT)"];
+    C [label="Per-slice Features\n(S*B, slice_feat_dim)\n-> reshape -> (B, S, slice_feat_dim)"];
+    D [label="Slice Projection\n(Linear -> LayerNorm -> Dropout)\n-> embed_dim"];
+    E [label="Depth GRU\n(sequence over S slices)"];
+    F [label="Depth Attention\n(weighted sum over slices)"];
+    G [label="Depth-resolved Feature\n(embed_dim)"];
+    A -> B -> C -> D -> E -> F -> G;
+  }
+
+  H [label="Dual-Head Encoder\n(feature_proj -> causal & noise heads)"];
+  H1 [label="z_causal"];
+  H2 [label="z_noise"];
+  CLF [label="Classifier\n(z_causal -> logits)"];
+  DISC [label="Center Discriminator\n(z_noise -> center_logits)"];
+  MEM [label="Noise Memory Bank\n(update per-center)"];
+  CF [label="z_noise_cf\n(counterfactual noise)"];
+  COMB [label="z_causal_cf = z_causal + \u03b1_cf * z_noise_cf"];
+  CLF2 [label="Classifier (cf)\n(z_causal_cf -> logits_cf)"];
+  L_ADV [label="L_adv\n(Adversarial Loss)"];
+  L_CONS [label="L_consist\n(Counterfactual Consistency)"];
+  L_ORTH [label="L_ortho\n(Orthogonal Loss)"];
+
+  G -> H;
+  H -> H1;
+  H -> H2;
+  H1 -> CLF;
+  H2 -> DISC;
+  H2 -> MEM;
+  MEM -> CF;
+  H1 -> COMB;
+  CF -> COMB;
+  COMB -> CLF2;
+
+  DISC -> L_ADV [style="dashed"];
+  CLF2 -> L_CONS [style="dashed"];
+  H1 -> L_ORTH [style="dashed"];
+  H2 -> L_ORTH [style="dashed"];
+
+  L_ADV [fillcolor="#f4f4f4", shape=rect];
+  L_CONS [fillcolor="#f4f4f4", shape=rect];
+  L_ORTH [fillcolor="#f4f4f4", shape=rect];
+
+}
